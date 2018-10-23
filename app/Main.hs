@@ -19,11 +19,16 @@ type Grid = [Cell]
 data Template
   = O
   | L
+  | J
+  | S
+  | T
+  | Z
   deriving (Show, Eq)
 
 data Figure = Figure
   { template :: Template
   , leftTop :: Point
+  , state :: Int
   , color' :: Color
   } deriving (Show)
 
@@ -33,13 +38,61 @@ data Game = Game
   , stdGen :: StdGen
   } deriving (Show)
 
+-- rotations are stolen from https://github.com/brenns10/tetris/
+rotations :: [(Template, [[Point]])]
+rotations =
+  [ ( O
+    , [ [(1, 0), (1, 1), (1, 2), (1, 3)]
+      , [(0, 2), (1, 2), (2, 2), (3, 2)]
+      , [(3, 0), (3, 1), (3, 2), (3, 3)]
+      , [(0, 1), (1, 1), (2, 1), (3, 1)]
+      ])
+  , ( J
+    , [ [(0, 0), (1, 0), (1, 1), (1, 2)]
+      , [(0, 1), (0, 2), (1, 1), (2, 1)]
+      , [(1, 0), (1, 1), (1, 2), (2, 2)]
+      , [(0, 1), (1, 1), (2, 0), (2, 1)]
+      ])
+  , ( L
+    , [ [(0, 2), (1, 0), (1, 1), (1, 2)]
+      , [(0, 1), (1, 1), (2, 1), (2, 2)]
+      , [(1, 0), (1, 1), (1, 2), (2, 0)]
+      , [(0, 0), (0, 1), (1, 1), (2, 1)]
+      ])
+  , ( O
+    , [ [(0, 1), (0, 2), (1, 1), (1, 2)]
+      , [(0, 1), (0, 2), (1, 1), (1, 2)]
+      , [(0, 1), (0, 2), (1, 1), (1, 2)]
+      , [(0, 1), (0, 2), (1, 1), (1, 2)]
+      ])
+  , ( S
+    , [ [(0, 1), (0, 2), (1, 0), (1, 1)]
+      , [(0, 1), (1, 1), (1, 2), (2, 2)]
+      , [(1, 1), (1, 2), (2, 0), (2, 1)]
+      , [(0, 0), (1, 0), (1, 1), (2, 1)]
+      ])
+  , ( T
+    , [ [(0, 1), (1, 0), (1, 1), (1, 2)]
+      , [(0, 1), (1, 1), (1, 2), (2, 1)]
+      , [(1, 0), (1, 1), (1, 2), (2, 1)]
+      , [(0, 1), (1, 0), (1, 1), (2, 1)]
+      ])
+  , ( Z
+    , [ [(0, 0), (0, 1), (1, 1), (1, 2)]
+      , [(0, 2), (1, 1), (1, 2), (2, 1)]
+      , [(1, 0), (1, 1), (2, 1), (2, 2)]
+      , [(0, 1), (1, 0), (1, 1), (2, 0)]
+      ])
+  ]
+
 initialState :: Game
-initialState = Game grid (Figure (template figure) (leftTop figure) clr) stdGen
+initialState =
+  Game grid (Figure (template figure) (leftTop figure) 0 clr) stdGen
   where
     initial@Game {grid, figure} =
       Game
         [((r, c), black) | r <- [0 .. rows - 1], c <- [0 .. columns - 1]]
-        (Figure O (0, columns `div` 2) yellow)
+        (Figure L (0, columns `div` 2) 0 yellow)
         (mkStdGen seed)
     (clr, Game {stdGen}) = randomColor initial
 
@@ -48,10 +101,10 @@ colors =
   [yellow, cyan, magenta, rose, violet, azure, aquamarine, chartreuse, orange]
 
 columns :: Int
-columns = 4
+columns = 10
 
 rows :: Int
-rows = 7
+rows = 20
 
 cellSize :: Int
 cellSize = 20
@@ -80,11 +133,11 @@ renderCell ((row, column), clr) =
     yCenter = height `div` 2 - cellSize `div` 2 - (row * cellSize)
 
 figureToGrid :: Figure -> Grid
-figureToGrid (Figure t (x, y) c)
-  | t == O = map ((, c) . (\(px, py) -> (px + x, py + y))) initO
-  | otherwise = error "not implemented yet"
+figureToGrid (Figure t (x, y) s c) = map shift (getRotation t s)
   where
-    initO = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    getRotation t' s' =
+      (snd $ head $ filter (\tpl -> fst tpl == t') rotations) !! s'
+    shift = (, c) . (\(px, py) -> (px + x, py + y))
 
 hasPoint :: Grid -> Point -> Bool
 hasPoint g p = p `elem` map fst g
@@ -102,13 +155,13 @@ at :: Grid -> Point -> Cell
 at cs p = head $ filter (\c -> fst c == p) cs
 
 moveRight :: Figure -> Figure
-moveRight (Figure t (r, c) clr) = Figure t (r, c + 1) clr
+moveRight (Figure t (r, c) clr s) = Figure t (r, c + 1) clr s
 
 moveLeft :: Figure -> Figure
-moveLeft (Figure t (r, c) clr) = Figure t (r, c - 1) clr
+moveLeft (Figure t (r, c) clr s) = Figure t (r, c - 1) clr s
 
 moveDown :: Figure -> Figure
-moveDown (Figure t (r, c) clr) = Figure t (r + 1, c) clr
+moveDown (Figure t (r, c) clr s) = Figure t (r + 1, c) clr s
 
 fits :: Figure -> Grid -> Bool
 fits f g =
@@ -142,7 +195,23 @@ handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g@Game { grid
    in if moved `fits` grid
         then Game grid moved stdGen
         else traceShowId g
+handleKeys (EventKey (SpecialKey KeySpace) Down _ _) g@Game { grid
+                                                            , figure
+                                                            , stdGen
+                                                            } =
+  let turned = turn figure
+   in if turned `fits` grid
+        then Game grid turned stdGen
+        else g
 handleKeys _ g = g
+
+turn :: Figure -> Figure
+turn (Figure t lt s c) = Figure t lt s' c
+  where
+    s' =
+      if s == 3
+        then 0
+        else s + 1
 
 isHitTheGround :: Game -> Bool
 isHitTheGround Game {grid, figure} = not $ moveDown figure `fits` grid
@@ -166,7 +235,7 @@ updateIfHitTheGround _ g@Game {grid, figure} =
   where
     (clr, Game {stdGen}) = randomColor g
     grid' = merge grid (figureToGrid figure)
-    figure' = Figure O (0, columns `div` 2) clr
+    figure' = Figure O (0, columns `div` 2) 0 clr
 
 getRow :: Grid -> Int -> [Cell]
 getRow g n = filter (\((r, _), _) -> r == n) g
@@ -200,6 +269,7 @@ getFullRow g =
   filter snd $
   map (\(i, r) -> (i, isFull r)) $ map (\i -> (i, getRow g i)) [0 .. rows - 1]
 
+{-# NOINLINE seed #-}
 seed :: Int
 seed = unsafePerformIO $ round `fmap` getPOSIXTime
 
