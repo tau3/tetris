@@ -1,10 +1,14 @@
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Main where
 
+import Data.Time.Clock.POSIX
 import Debug.Trace
 import Graphics.Gloss hiding (Point)
 import Graphics.Gloss.Interface.Pure.Game hiding (Point)
+import System.IO.Unsafe
+import System.Random
 
 type Point = (Int, Int)
 
@@ -18,21 +22,30 @@ data Template
   deriving (Show, Eq)
 
 data Figure = Figure
-  { getTemplate :: Template
-  , getLeftTop :: Point
-  , getColor :: Color
+  { template :: Template
+  , leftTop :: Point
+  , color' :: Color
   } deriving (Show)
 
 data Game = Game
-  { getGrid :: Grid
-  , getFigure :: Figure
+  { grid :: Grid
+  , figure :: Figure
+  , stdGen :: StdGen
   } deriving (Show)
 
 initialState :: Game
-initialState =
-  Game
-    [((r, c), black) | r <- [0 .. rows - 1], c <- [0 .. columns - 1]]
-    (Figure O (0, columns `div` 2) red)
+initialState = Game grid (Figure (template figure) (leftTop figure) clr) stdGen
+  where
+    initial@Game {grid, figure} =
+      Game
+        [((r, c), black) | r <- [0 .. rows - 1], c <- [0 .. columns - 1]]
+        (Figure O (0, columns `div` 2) yellow)
+        (mkStdGen seed)
+    (clr, Game {stdGen}) = randomColor initial
+
+colors :: [Color]
+colors =
+  [yellow, cyan, magenta, rose, violet, azure, aquamarine, chartreuse, orange]
 
 columns :: Int
 columns = 4
@@ -80,7 +93,7 @@ merge :: Grid -> Grid -> Grid
 merge acc i = filter (not . hasPoint i . fst) acc ++ i
 
 render :: Game -> Picture
-render (Game grid figure) =
+render Game {grid, figure} =
   let fGrid = figureToGrid figure
       resGrid = merge grid fGrid
    in pictures $ map renderCell resGrid
@@ -105,37 +118,55 @@ fits f g =
    in all fit ps
 
 handleKeys :: Event -> Game -> Game
-handleKeys (EventKey (SpecialKey KeyRight) Down _ _) g@(Game grid figure) =
+handleKeys (EventKey (SpecialKey KeyRight) Down _ _) g@Game { grid
+                                                            , figure
+                                                            , stdGen
+                                                            } =
   let moved = moveRight figure
    in if moved `fits` grid
-        then Game grid moved
+        then Game grid moved stdGen
         else g
-handleKeys (EventKey (SpecialKey KeyLeft) Down _ _) g@(Game grid figure) =
+handleKeys (EventKey (SpecialKey KeyLeft) Down _ _) g@Game { grid
+                                                           , figure
+                                                           , stdGen
+                                                           } =
   let moved = moveLeft figure
    in if moved `fits` grid
-        then Game grid moved
+        then Game grid moved stdGen
         else g
-handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g@(Game grid figure) =
+handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g@Game { grid
+                                                           , figure
+                                                           , stdGen
+                                                           } =
   let moved = moveDown figure
    in if moved `fits` grid
-        then Game grid moved
+        then Game grid moved stdGen
         else traceShowId g
 handleKeys _ g = g
 
 isHitTheGround :: Game -> Bool
-isHitTheGround (Game g f) = not $ moveDown f `fits` g
+isHitTheGround Game {grid, figure} = not $ moveDown figure `fits` grid
 
 fps :: Int
 fps = 60
 
+randomColor :: Game -> (Color, Game)
+randomColor Game {grid, figure, stdGen} = (clr, g')
+  where
+    (i, r) = random stdGen :: (Int, StdGen)
+    i' = i `mod` length colors
+    clr = colors !! i'
+    g' = Game grid figure r
+
 updateIfHitTheGround :: Float -> Game -> Game
-updateIfHitTheGround _ g@(Game grid figure) =
+updateIfHitTheGround _ g@Game {grid, figure} =
   if isHitTheGround g
-    then Game newGrid newFigure
+    then Game grid' figure' stdGen
     else g
   where
-    newGrid = merge grid (figureToGrid figure)
-    newFigure = Figure O (0, columns `div` 2) red
+    (clr, Game {stdGen}) = randomColor g
+    grid' = merge grid (figureToGrid figure)
+    figure' = Figure O (0, columns `div` 2) clr
 
 getRow :: Grid -> Int -> [Cell]
 getRow g n = filter (\((r, _), _) -> r == n) g
@@ -169,10 +200,13 @@ getFullRow g =
   filter snd $
   map (\(i, r) -> (i, isFull r)) $ map (\i -> (i, getRow g i)) [0 .. rows - 1]
 
+seed :: Int
+seed = unsafePerformIO $ round `fmap` getPOSIXTime
+
 removeFullRows :: Float -> Game -> Game
-removeFullRows f g@(Game grid figure) =
+removeFullRows f g@(Game grid figure stdGen) =
   case fullRow of
-    Just n -> removeFullRows f (Game (removeFullRow grid n) figure)
+    Just n -> removeFullRows f (Game (removeFullRow grid n) figure stdGen)
     Nothing -> g
   where
     fullRow = getFullRow grid
