@@ -142,24 +142,15 @@ render Game {grid, figure} =
       resGrid = merge grid fGrid
    in pictures $ map renderCell resGrid
 
-at :: Grid -> Point -> Cell
-at cs p = head $ filter (\c -> fst c == p) cs
-
-moveRight :: Figure -> Figure
-moveRight (Figure t (r, c) clr s) = Figure t (r, c + 1) clr s
-
-moveLeft :: Figure -> Figure
-moveLeft (Figure t (r, c) clr s) = Figure t (r, c - 1) clr s
-
 moveDown :: Figure -> Figure
-moveDown (Figure t (r, c) clr s) = Figure t (r + 1, c) clr s
+moveDown f@Figure {leftTop = (r, c)} = f {leftTop = (r + 1, c)}
 
 fits :: Figure -> Grid -> Bool
-fits f g =
-  let asGrid = figureToGrid f
-      fit p = g `hasPoint` p && (snd (g `at` p) == background)
-      ps = map fst asGrid
-   in all fit ps
+fits figure grid = all fit points
+  where
+    fit p = grid `hasPoint` p && (snd (grid `at` p) == background)
+    points = map fst $ figureToGrid figure
+    at grid' p' = head $ filter (\c -> fst c == p') grid'
 
 adjustFigure :: (Figure -> Figure) -> Game -> Game
 adjustFigure f g@Game {grid, figure} =
@@ -171,9 +162,15 @@ adjustFigure f g@Game {grid, figure} =
 handleKeys :: Event -> Game -> Game
 handleKeys (EventKey (SpecialKey KeyRight) Down _ _) g =
   adjustFigure moveRight g
+  where
+    moveRight f@Figure {leftTop = (r, c)} = f {leftTop = (r, c + 1)}
 handleKeys (EventKey (SpecialKey KeyLeft) Down _ _) g = adjustFigure moveLeft g
+  where
+    moveLeft f@Figure {leftTop = (r, c)} = f {leftTop = (r, c - 1)}
 handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g = adjustFigure moveDown g
 handleKeys (EventKey (SpecialKey KeySpace) Down _ _) g = adjustFigure turn g
+  where
+    turn f@Figure {state} = f {state = (state + 1) `mod` 4}
 handleKeys (EventKey (SpecialKey KeyEnter) Down _ _) g = dropDownFigure g
 handleKeys _ g = g
 
@@ -183,12 +180,6 @@ dropDownFigure g@Game {figure, grid} =
    in if moved `fits` grid
         then dropDownFigure g {figure = moved}
         else g
-
-turn :: Figure -> Figure
-turn f@Figure {state} = f {state = (state + 1) `mod` 4}
-
-isHitTheGround :: Game -> Bool
-isHitTheGround Game {grid, figure} = not $ moveDown figure `fits` grid
 
 randomInt :: StdGen -> Int -> (Int, StdGen)
 randomInt rand limit = (result, rand')
@@ -209,74 +200,67 @@ randomFigure stdGen = (f, stdGen''')
         state
         (colors !! clr)
 
-updateIfHitTheGround :: Float -> Game -> Game
-updateIfHitTheGround _ g@Game {grid, figure, stdGen} =
-  if isHitTheGround g
-    then Game grid' figure' stdGen'
-    else g
-  where
-    grid' = merge grid (figureToGrid figure)
-    (figure', stdGen') = randomFigure stdGen
-
-getRow :: Grid -> Int -> [Cell]
-getRow g n = filter (\((r, _), _) -> r == n) g
-
-isFull :: [Cell] -> Bool
-isFull = all (\c -> snd c /= background)
+ifThen :: (a -> Bool) -> (a -> a) -> a -> a
+ifThen p f x =
+  if p x
+    then f x
+    else x
 
 removeFullRow :: Grid -> Int -> Grid
-removeFullRow g n =
-  let g' = filter (\((r, _), _) -> r /= n) g
-      g'' =
-        map
-          (\((r, c), clr) ->
-             let r' =
-                   if r < n
-                     then r + 1
-                     else r
-              in ((r', c), clr))
-          g'
-      emptyTopRow = [((0, c), background) | c <- [0 .. columns - 1]]
-   in emptyTopRow ++ g''
+removeFullRow g n = emptyTopRow ++ g''
+  where
+    isOnFullRow ((r, _), _) = r == n
+    g'' = map maybeMoveDownCell $ filter (not . isOnFullRow) g
+    maybeMoveDownCell ((r, c), clr) = ((r', c), clr)
+      where
+        r' = ifThen (< n) (+ 1) r
+    emptyTopRow = [((0, c), background) | c <- [0 .. columns - 1]]
 
 maybeHead :: [a] -> Maybe a
 maybeHead [] = Nothing
 maybeHead (x:_) = Just x
 
 getFullRow :: Grid -> Maybe Int
-getFullRow g =
-  maybeHead $
-  map fst $
-  filter snd $
-  map (\(i, r) -> (i, isFull r)) $ map (\i -> (i, getRow g i)) [0 .. rows - 1]
+getFullRow = maybeHead . map fst . filter (isFull . snd) . enumeratedRows
+  where
+    enumeratedRows g = zip [0 ..] $ map (getRow g) [0 .. rows - 1]
+    getRow g n = filter (\((r, _), _) -> r == n) g :: [Cell]
+    isFull = all (\c -> snd c /= background) :: [Cell] -> Bool
 
 {-# NOINLINE seed #-}
 seed :: Int
 seed = unsafePerformIO $ round `fmap` getPOSIXTime
 
-removeFullRows :: Float -> Game -> Game
-removeFullRows f g@(Game grid figure stdGen) =
+removeFullRows :: Game -> Game
+removeFullRows g@Game {grid} =
   case fullRow of
-    Just n -> removeFullRows f (Game (removeFullRow grid n) figure stdGen)
+    Just n -> removeFullRows g {grid = removeFullRow grid n}
     Nothing -> g
   where
     fullRow = getFullRow grid
 
-checksBeforeHitTheGround :: Float -> Game -> Game
-checksBeforeHitTheGround _ g@Game {figure, grid} =
-  let moved = moveDown figure
-   in if moved `fits` grid
-        then g {figure = moved}
-        else g
+maybeMoveDownFigure :: Game -> Game
+maybeMoveDownFigure g@Game {figure, grid} =
+  if moved `fits` grid
+    then g {figure = moved}
+    else g
+  where
+    moved = moveDown figure
+
+spawnNewFigure :: Game -> Game
+spawnNewFigure Game {grid, figure, stdGen} = Game grid' figure' stdGen'
+  where
+    grid' = merge grid (figureToGrid figure)
+    (figure', stdGen') = randomFigure stdGen
 
 update :: Float -> Game -> Game
-update f g =
-  let g' = checksBeforeHitTheGround f g
-   in if isHitTheGround g'
-        then let g'' = updateIfHitTheGround f g'
-                 g''' = removeFullRows f g''
-              in g'''
-        else g'
+update _ g@Game {grid, figure} =
+  if isHitTheGround
+    then removeFullRows $ spawnNewFigure g'
+    else g'
+  where
+    g' = maybeMoveDownFigure g
+    isHitTheGround = not $ moveDown figure `fits` grid
 
 main :: IO ()
 main = play window background fps initialState render handleKeys update
