@@ -4,7 +4,6 @@
 module Main where
 
 import Data.Time.Clock.POSIX
-import Debug.Trace
 import Graphics.Gloss hiding (Point)
 import Graphics.Gloss.Interface.Pure.Game hiding (Point)
 import System.IO.Unsafe
@@ -113,14 +112,8 @@ width = columns * cellSize
 height :: Int
 height = rows * cellSize
 
-window :: Display
-window = InWindow "Tetris" (width, height) (10, 10)
-
 background :: Color
-background = white
-
-drawing :: Picture
-drawing = circle 80
+background = black
 
 renderCell :: Cell -> Picture
 renderCell ((row, column), clr) =
@@ -131,11 +124,11 @@ renderCell ((row, column), clr) =
     yCenter = height `div` 2 - cellSize `div` 2 - (row * cellSize)
 
 figureToGrid :: Figure -> Grid
-figureToGrid (Figure t (x, y) s c) = map shift (getRotation t s)
+figureToGrid (Figure template (x, y) state clr) = map shift rotation
   where
-    getRotation t' s' =
-      snd (head $ filter (\tpl -> fst tpl == t') rotations) !! s'
-    shift = (, c) . (\(px, py) -> (px + x, py + y))
+    rotation =
+      snd (head $ filter (\tpl -> fst tpl == template) rotations) !! state
+    shift = (, clr) . (\(x', y') -> (x' + x, y' + y))
 
 hasPoint :: Grid -> Point -> Bool
 hasPoint g p = p `elem` map fst g
@@ -164,58 +157,38 @@ moveDown (Figure t (r, c) clr s) = Figure t (r + 1, c) clr s
 fits :: Figure -> Grid -> Bool
 fits f g =
   let asGrid = figureToGrid f
-      fit p = g `hasPoint` p && (snd (g `at` p) == black)
+      fit p = g `hasPoint` p && (snd (g `at` p) == background)
       ps = map fst asGrid
    in all fit ps
 
+adjustFigure :: (Figure -> Figure) -> Game -> Game
+adjustFigure f g@Game {grid, figure} =
+  let figure' = f figure
+   in if figure' `fits` grid
+        then g {figure = figure'}
+        else g
+
 handleKeys :: Event -> Game -> Game
-handleKeys (EventKey (SpecialKey KeyRight) Down _ _) g@Game { grid
-                                                            , figure
-                                                            , stdGen
-                                                            } =
-  let moved = moveRight figure
-   in if moved `fits` grid
-        then Game grid moved stdGen
-        else g
-handleKeys (EventKey (SpecialKey KeyLeft) Down _ _) g@Game { grid
-                                                           , figure
-                                                           , stdGen
-                                                           } =
-  let moved = moveLeft figure
-   in if moved `fits` grid
-        then Game grid moved stdGen
-        else g
-handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g@Game { grid
-                                                           , figure
-                                                           , stdGen
-                                                           } =
-  let moved = moveDown figure
-   in if moved `fits` grid
-        then Game grid moved stdGen
-        else g
-handleKeys (EventKey (SpecialKey KeySpace) Down _ _) g@Game { grid
-                                                            , figure
-                                                            , stdGen
-                                                            } =
-  let turned = turn figure
-   in if turned `fits` grid
-        then Game grid turned stdGen
-        else g
+handleKeys (EventKey (SpecialKey KeyRight) Down _ _) g =
+  adjustFigure moveRight g
+handleKeys (EventKey (SpecialKey KeyLeft) Down _ _) g = adjustFigure moveLeft g
+handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g = adjustFigure moveDown g
+handleKeys (EventKey (SpecialKey KeySpace) Down _ _) g = adjustFigure turn g
+handleKeys (EventKey (SpecialKey KeyEnter) Down _ _) g = dropDownFigure g
 handleKeys _ g = g
 
+dropDownFigure :: Game -> Game
+dropDownFigure g@Game {figure, grid} =
+  let moved = moveDown figure
+   in if moved `fits` grid
+        then dropDownFigure g {figure = moved}
+        else g
+
 turn :: Figure -> Figure
-turn (Figure t lt s c) = Figure t lt s' c
-  where
-    s' =
-      if s == 3
-        then 0
-        else s + 1
+turn f@Figure {state} = f {state = (state + 1) `mod` 4}
 
 isHitTheGround :: Game -> Bool
 isHitTheGround Game {grid, figure} = not $ moveDown figure `fits` grid
-
-fps :: Int
-fps = 60
 
 randomInt :: StdGen -> Int -> (Int, StdGen)
 randomInt rand limit = (result, rand')
@@ -249,7 +222,7 @@ getRow :: Grid -> Int -> [Cell]
 getRow g n = filter (\((r, _), _) -> r == n) g
 
 isFull :: [Cell] -> Bool
-isFull = all (\((_, _), clr) -> clr /= black)
+isFull = all (\c -> snd c /= background)
 
 removeFullRow :: Grid -> Int -> Grid
 removeFullRow g n =
@@ -263,7 +236,7 @@ removeFullRow g n =
                      else r
               in ((r', c), clr))
           g'
-      emptyTopRow = [((0, c), black) | c <- [0 .. columns - 1]]
+      emptyTopRow = [((0, c), background) | c <- [0 .. columns - 1]]
    in emptyTopRow ++ g''
 
 maybeHead :: [a] -> Maybe a
@@ -290,29 +263,23 @@ removeFullRows f g@(Game grid figure stdGen) =
     fullRow = getFullRow grid
 
 checksBeforeHitTheGround :: Float -> Game -> Game
-checksBeforeHitTheGround f g@Game {figure, grid} =
-  if False
-    then let moved = moveDown figure
-          in if moved `fits` grid
-               then g {grid, figure = moved}
-               else g
-    else g
+checksBeforeHitTheGround _ g@Game {figure, grid} =
+  let moved = moveDown figure
+   in if moved `fits` grid
+        then g {figure = moved}
+        else g
 
-update :: Float -> Game -> Game
-update f g =
-  if isHitTheGround g
-    then let g' = updateIfHitTheGround f g
-             g'' = removeFullRows f g'
-          in g''
-    else g
-
-{-
 update :: Float -> Game -> Game
 update f g =
   let g' = checksBeforeHitTheGround f g
    in if isHitTheGround g'
-        then updateIfHitTheGround f g'
+        then let g'' = updateIfHitTheGround f g'
+                 g''' = removeFullRows f g''
+              in g'''
         else g'
--}
+
 main :: IO ()
 main = play window background fps initialState render handleKeys update
+  where
+    window = InWindow "Tetris" (width, height) (10, 10)
+    fps = 1
