@@ -23,6 +23,7 @@ data Template
   | S
   | T
   | Z
+  | I
   deriving (Show, Eq)
 
 data Figure = Figure
@@ -41,7 +42,7 @@ data Game = Game
 -- rotations are stolen from https://github.com/brenns10/tetris/
 rotations :: [(Template, [[Point]])]
 rotations =
-  [ ( O
+  [ ( I
     , [ [(1, 0), (1, 1), (1, 2), (1, 3)]
       , [(0, 2), (1, 2), (2, 2), (3, 2)]
       , [(3, 0), (3, 1), (3, 2), (3, 3)]
@@ -86,15 +87,12 @@ rotations =
   ]
 
 initialState :: Game
-initialState =
-  Game grid (Figure (template figure) (leftTop figure) 0 clr) stdGen
+initialState = Game grid f stdGen'
   where
-    initial@Game {grid, figure} =
-      Game
-        [((r, c), black) | r <- [0 .. rows - 1], c <- [0 .. columns - 1]]
-        (Figure L (0, columns `div` 2) 0 yellow)
-        (mkStdGen seed)
-    (clr, Game {stdGen}) = randomColor initial
+    stdGen = mkStdGen seed
+    (f, stdGen') = randomFigure stdGen
+    grid =
+      [((r, c), background) | r <- [0 .. rows - 1], c <- [0 .. columns - 1]]
 
 colors :: [Color]
 colors =
@@ -136,7 +134,7 @@ figureToGrid :: Figure -> Grid
 figureToGrid (Figure t (x, y) s c) = map shift (getRotation t s)
   where
     getRotation t' s' =
-      (snd $ head $ filter (\tpl -> fst tpl == t') rotations) !! s'
+      snd (head $ filter (\tpl -> fst tpl == t') rotations) !! s'
     shift = (, c) . (\(px, py) -> (px + x, py + y))
 
 hasPoint :: Grid -> Point -> Bool
@@ -194,7 +192,7 @@ handleKeys (EventKey (SpecialKey KeyDown) Down _ _) g@Game { grid
   let moved = moveDown figure
    in if moved `fits` grid
         then Game grid moved stdGen
-        else traceShowId g
+        else g
 handleKeys (EventKey (SpecialKey KeySpace) Down _ _) g@Game { grid
                                                             , figure
                                                             , stdGen
@@ -219,23 +217,33 @@ isHitTheGround Game {grid, figure} = not $ moveDown figure `fits` grid
 fps :: Int
 fps = 60
 
-randomColor :: Game -> (Color, Game)
-randomColor Game {grid, figure, stdGen} = (clr, g')
+randomInt :: StdGen -> Int -> (Int, StdGen)
+randomInt rand limit = (result, rand')
   where
-    (i, r) = random stdGen :: (Int, StdGen)
-    i' = i `mod` length colors
-    clr = colors !! i'
-    g' = Game grid figure r
+    (n, rand') = random rand :: (Int, StdGen)
+    result = n `mod` limit
+
+randomFigure :: StdGen -> (Figure, StdGen)
+randomFigure stdGen = (f, stdGen''')
+  where
+    (clr, stdGen') = randomInt stdGen (length colors)
+    (template, stdGen'') = randomInt stdGen' (length rotations)
+    (state, stdGen''') = randomInt stdGen'' 4
+    f =
+      Figure
+        (fst (rotations !! template))
+        (0, columns `div` 2)
+        state
+        (colors !! clr)
 
 updateIfHitTheGround :: Float -> Game -> Game
-updateIfHitTheGround _ g@Game {grid, figure} =
+updateIfHitTheGround _ g@Game {grid, figure, stdGen} =
   if isHitTheGround g
-    then Game grid' figure' stdGen
+    then Game grid' figure' stdGen'
     else g
   where
-    (clr, Game {stdGen}) = randomColor g
     grid' = merge grid (figureToGrid figure)
-    figure' = Figure O (0, columns `div` 2) 0 clr
+    (figure', stdGen') = randomFigure stdGen
 
 getRow :: Grid -> Int -> [Cell]
 getRow g n = filter (\((r, _), _) -> r == n) g
@@ -281,6 +289,15 @@ removeFullRows f g@(Game grid figure stdGen) =
   where
     fullRow = getFullRow grid
 
+checksBeforeHitTheGround :: Float -> Game -> Game
+checksBeforeHitTheGround f g@Game {figure, grid} =
+  if False
+    then let moved = moveDown figure
+          in if moved `fits` grid
+               then g {grid, figure = moved}
+               else g
+    else g
+
 update :: Float -> Game -> Game
 update f g =
   if isHitTheGround g
@@ -289,5 +306,13 @@ update f g =
           in g''
     else g
 
+{-
+update :: Float -> Game -> Game
+update f g =
+  let g' = checksBeforeHitTheGround f g
+   in if isHitTheGround g'
+        then updateIfHitTheGround f g'
+        else g'
+-}
 main :: IO ()
 main = play window background fps initialState render handleKeys update
